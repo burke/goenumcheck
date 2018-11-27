@@ -42,11 +42,13 @@ func assertCases(node *ast.SwitchStmt, switchedTypeName string, etype []string) 
 				case *ast.Ident:
 					found[exp.Name] = true
 				case *ast.SelectorExpr:
-					// TODO(burke): we're not asserting the package this is from, really.
-					// This is kind of a shitty/lazy way of doing this.
+					// TODO: we're not asserting the correct package.
+					// This happens when we have e.g. otherpackage.TypeFoo exp.X is the
+					// imported package name (not path). I'm sure there's some way to
+					// resolve that but it feels like too much work for now.
 					found[exp.Sel.Name] = true
 				default:
-					panic("idk")
+					// ???
 				}
 			}
 		}
