@@ -1,6 +1,6 @@
 # goenumcheck
 
-`gosumcheck` provides assertion that, given an "enum" type in Go, any `switch` statements ranging
+`goenumcheck` provides assertion that, given an "enum" type in Go, any `switch` statements ranging
 over a value of that type cover all declared instances.
 
 For example:
