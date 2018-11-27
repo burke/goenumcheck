@@ -38,8 +38,15 @@ func assertCases(node *ast.SwitchStmt, switchedTypeName string, etype []string) 
 				return nil
 			}
 			for _, expr := range c.List {
-				if ident, ok := expr.(*ast.Ident); ok {
-					found[ident.Name] = true
+				switch exp := expr.(type) {
+				case *ast.Ident:
+					found[exp.Name] = true
+				case *ast.SelectorExpr:
+					// TODO(burke): we're not asserting the package this is from, really.
+					// This is kind of a shitty/lazy way of doing this.
+					found[exp.Sel.Name] = true
+				default:
+					panic("idk")
 				}
 			}
 		}
@@ -61,13 +68,13 @@ func assertCases(node *ast.SwitchStmt, switchedTypeName string, etype []string) 
 	return nil
 }
 
-func validateSwitch(pkgs []*types.Package, switchStmt *ast.SwitchStmt, pkgPath string) error {
-	if switchedType, ok := typeNameOf(switchStmt); ok {
-		names, ok := enumNamesFor(pkgs, pkgPath, switchedType)
+func validateSwitch(pkgs []*types.Package, info types.Info, switchStmt *ast.SwitchStmt, pkgPath string) error {
+	if switchedType, ok := typeNameOf(info, switchStmt); ok {
+		names, ok := enumNamesFor(pkgs, switchedType)
 		if !ok {
 			return nil
 		}
-		return assertCases(switchStmt, switchedType, names)
+		return assertCases(switchStmt, switchedType.Name(), names)
 	}
 
 	return nil
@@ -75,48 +82,34 @@ func validateSwitch(pkgs []*types.Package, switchStmt *ast.SwitchStmt, pkgPath s
 
 // E.g. with `type demo int`, and a switch ranging over a value of type `demo`,
 // this would return ("demo", true). Most other cases are ("", false).
-func typeNameOf(switchStmt *ast.SwitchStmt) (string, bool) {
-	switch tag := switchStmt.Tag.(type) {
-	case *ast.CallExpr: // e.g. switch action(...) in galaxy-go/snapshot/diff.go
-		switch fun := tag.Fun.(type) {
-		case *ast.SelectorExpr:
-			var selector *ast.Ident = fun.Sel
-			_ = selector
-
-			switch recv := fun.X.(type) {
-			case *ast.Ident:
-				fmt.Printf("%#v\n", recv.Obj.Decl)
-			}
-		case *ast.Ident:
-			if obj := fun.Obj; obj != nil {
-				if decl, ok := obj.Decl.(*ast.FuncDecl); ok {
-					var resFL *ast.FieldList = decl.Type.Results
-					if len(resFL.List) == 1 {
-						var field *ast.Field = resFL.List[0]
-						if resType, ok := field.Type.(*ast.Ident); ok {
-							return resType.Name, true
-						}
-					}
-				}
-			}
-		}
-	case *ast.Ident:
-		if fld, ok := tag.Obj.Decl.(*ast.Field); ok {
-			if tid, ok := fld.Type.(*ast.Ident); ok {
-				obj := tid.Obj
-				if obj != nil && obj.Kind == ast.Typ {
-					return obj.Name, true
-				}
-			}
-		}
+func typeNameOf(info types.Info, switchStmt *ast.SwitchStmt) (*types.TypeName, bool) {
+	expr, ok := switchStmt.Tag.(ast.Expr)
+	if !ok {
+		fmt.Printf("aaa: %#v\n", switchStmt)
+		return nil, false
 	}
-	return "", false
+
+	typeAndValue, ok := info.Types[expr]
+	if !ok {
+		fmt.Printf("bbb: %#v\n", expr)
+		return nil, false
+	}
+
+	namedType, ok := typeAndValue.Type.(*types.Named)
+	if !ok {
+		fmt.Printf("ccc: %#v\n", typeAndValue)
+		return nil, false
+	}
+
+	// fmt.Printf("ddd: %#v\n", namedType.Obj())
+	return namedType.Obj(), true
 }
 
 func CheckSwitch(f *lint.File) {
 	allPkgs := typeutil.Dependencies(f.Pkg.TypesPkg)
 
 	pkgPath := f.Pkg.TypesPkg.Path()
+	info := f.Pkg.TypesInfo
 
 	fn := func(node ast.Node) bool {
 		switchStmt, ok := node.(*ast.SwitchStmt)
@@ -124,7 +117,7 @@ func CheckSwitch(f *lint.File) {
 			return true
 		}
 		// fmt.Printf("%s, %#v\n", f.Filename, switchStmt.Tag)
-		if err := validateSwitch(allPkgs, switchStmt, pkgPath); err != nil {
+		if err := validateSwitch(allPkgs, info, switchStmt, pkgPath); err != nil {
 			f.Errorf(switchStmt, err.Error())
 			return false
 		}
@@ -137,16 +130,16 @@ func CheckSwitch(f *lint.File) {
 //   type foo int ; const a foo = iota ; const b foo = iota
 // and we invoke this with the path of that package and "foo",
 // we get back []string{"a", "b"}, true.
-func enumNamesFor(pkgs []*types.Package, pkgPath, typeName string) (names []string, ok bool) {
+func enumNamesFor(pkgs []*types.Package, typeName *types.TypeName) (names []string, ok bool) {
 	for _, pkg := range pkgs {
 		// is it the package we're looking for?
-		if pkg.Path() != pkgPath {
+		if pkg.Path() != typeName.Pkg().Path() {
 			continue
 		}
 
 		for _, name := range pkg.Scope().Names() {
 			// is it the name we're looking for?
-			if name != typeName {
+			if name != typeName.Name() {
 				continue
 			}
 
@@ -162,8 +155,12 @@ func enumNamesFor(pkgs []*types.Package, pkgPath, typeName string) (names []stri
 				continue
 			}
 
-			// is it an alias to `int`?
-			if types.Typ[types.Int] != typ.Underlying() {
+			// is it an alias to `int` or `int32`?
+			// TODO: maybe we should be looser about this? I'm not really sure.
+			switch typ.Underlying() {
+			case types.Typ[types.Int]:
+			case types.Typ[types.Int32]:
+			default:
 				continue
 			}
 
