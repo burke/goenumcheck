@@ -2,13 +2,10 @@ package goenumcheck
 
 import (
 	"go/ast"
-	"go/importer"
-	"go/parser"
-	"go/token"
 	"go/types"
-	"io/ioutil"
 	"log"
 
+	"golang.org/x/tools/go/types/typeutil"
 	"honnef.co/go/lint"
 )
 
@@ -17,11 +14,11 @@ type enumType struct {
 	names []string
 }
 
-var enumTypes map[string][]string
+// var enumTypes map[string][]string
 
-func init() {
-	enumTypes = make(map[string][]string)
-}
+// func init() {
+// 	enumTypes = make(map[string][]string)
+// }
 
 type Checker struct{}
 
@@ -81,13 +78,13 @@ func assertCases(node *ast.SwitchStmt, info types.Info, etype []string) bool {
 	return true
 }
 
-func resolve(node *ast.SwitchStmt, info types.Info, pkgName string) bool {
+func resolve(node *ast.SwitchStmt, info types.Info, pkgPath string, enumTypes map[string][]string) bool {
 	if ident, ok := node.Tag.(*ast.Ident); ok {
 		if fld, ok := ident.Obj.Decl.(*ast.Field); ok {
 			if tid, ok := fld.Type.(*ast.Ident); ok {
 				obj := tid.Obj
 				if obj.Kind == ast.Typ {
-					if etype, ok := enumTypes[pkgName+"."+obj.Name]; ok {
+					if etype, ok := enumTypes[pkgPath+"."+obj.Name]; ok {
 						return assertCases(node, info, etype)
 					}
 				}
@@ -98,17 +95,19 @@ func resolve(node *ast.SwitchStmt, info types.Info, pkgName string) bool {
 }
 
 func CheckSwitch(f *lint.File) {
-	doOtherShit()
-	// all := typeutil.Dependencies(f.Pkg.TypesPkg)
+	all := typeutil.Dependencies(f.Pkg.TypesPkg)
+
+	enumTypes := enumTypesOf(all)
+
 	info := f.Pkg.TypesInfo
-	pkgName := f.Pkg.TypesPkg.Name()
+	pkgPath := f.Pkg.TypesPkg.Path()
 
 	fn := func(node ast.Node) bool {
 		switchStmt, ok := node.(*ast.SwitchStmt)
 		if !ok {
 			return true
 		}
-		if !resolve(switchStmt, info, pkgName) {
+		if !resolve(switchStmt, info, pkgPath, enumTypes) {
 			return false
 		}
 		return true
@@ -116,36 +115,22 @@ func CheckSwitch(f *lint.File) {
 	f.Walk(fn)
 }
 
-func doOtherShit() {
-	fset := token.NewFileSet()
-	rf, err := ioutil.ReadFile("lol/lol.go")
-	if err != nil {
-		panic(err)
-	}
-	f, err := parser.ParseFile(fset, "src.go", string(rf), 0)
-	if err != nil {
-		panic(err)
-	}
-	conf := types.Config{Importer: importer.Default()}
-	pkg, err := conf.Check("self", fset, []*ast.File{f}, nil)
-	if err != nil {
-		panic(err)
-	}
-
-	// pkgscope := typeutil.Dependencies(pkg)
-
-	for _, name := range pkg.Scope().Names() {
-		obj, ok := pkg.Scope().Lookup(name).(*types.TypeName)
-		if ok && obj != nil {
-			// is a type alias
-			if typ, ok := obj.Type().(*types.Named); ok {
-				// is an alias to `int`
-				if types.Typ[types.Int] == typ.Underlying() {
-					// find all constant assignments
-					for _, name := range pkg.Scope().Names() {
-						if obj, ok := pkg.Scope().Lookup(name).(*types.Const); ok {
-							if obj.Type() == typ {
-								enumTypes[typ.String()] = append(enumTypes[typ.String()], obj.Name())
+func enumTypesOf(pkgs []*types.Package) map[string][]string {
+	enumTypes := make(map[string][]string)
+	for _, pkg := range pkgs {
+		for _, name := range pkg.Scope().Names() {
+			obj, ok := pkg.Scope().Lookup(name).(*types.TypeName)
+			if ok && obj != nil {
+				// is a type alias
+				if typ, ok := obj.Type().(*types.Named); ok {
+					// is an alias to `int`
+					if types.Typ[types.Int] == typ.Underlying() {
+						// find all constant assignments
+						for _, name := range pkg.Scope().Names() {
+							if obj, ok := pkg.Scope().Lookup(name).(*types.Const); ok {
+								if obj.Type() == typ {
+									enumTypes[typ.String()] = append(enumTypes[typ.String()], obj.Name())
+								}
 							}
 						}
 					}
@@ -153,4 +138,5 @@ func doOtherShit() {
 			}
 		}
 	}
+	return enumTypes
 }
