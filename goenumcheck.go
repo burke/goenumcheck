@@ -1,9 +1,10 @@
 package goenumcheck
 
 import (
+	"fmt"
 	"go/ast"
 	"go/types"
-	"log"
+	"strings"
 
 	"golang.org/x/tools/go/types/typeutil"
 	"honnef.co/go/lint"
@@ -23,67 +24,93 @@ func (c *Checker) Funcs() map[string]lint.Func {
 	}
 }
 
-func assertCases(node *ast.SwitchStmt, etype []string) bool {
+func assertCases(node *ast.SwitchStmt, switchedTypeName string, etype []string) error {
 	found := make(map[string]bool)
 	for _, e := range etype {
 		found[e] = false
 	}
 
 	for _, caseClause := range node.Body.List {
-		c, ok := caseClause.(*ast.CaseClause)
-		if !ok {
-			log.Printf("got unexpected node: %v", caseClause)
-			continue
-		}
-		if c.List == nil {
-			// TODO: handle default clause
-		} else {
+		if c, ok := caseClause.(*ast.CaseClause); ok {
+			if c.List == nil {
+				// this is a default clause. When there's a default clause, we don't
+				// require coverage.
+				return nil
+			}
 			for _, expr := range c.List {
-				ident, ok := expr.(*ast.Ident)
-				if !ok {
-					return false
+				if ident, ok := expr.(*ast.Ident); ok {
+					found[ident.Name] = true
 				}
-
-				fnd, ok := found[ident.Name]
-				if !ok {
-					log.Println("found unexpected case:", ident.Name)
-				}
-
-				if fnd {
-					log.Println("duplicate case:", ident.Name)
-				}
-
-				found[ident.Name] = true
 			}
 		}
 	}
 
+	var missing []string
 	for name, fnd := range found {
 		if !fnd {
-			log.Println("missing case:", name)
-			return false
+			missing = append(missing, name)
 		}
 	}
-	return true
+	if len(missing) != 0 {
+		return fmt.Errorf(
+			"uncovered cases for %v enum switch\n\t- %v",
+			switchedTypeName,
+			strings.Join(missing, "\n\t- "),
+		)
+	}
+	return nil
 }
 
-func validateSwitch(pkgs []*types.Package, node *ast.SwitchStmt, pkgPath string) bool {
-	if ident, ok := node.Tag.(*ast.Ident); ok {
-		if fld, ok := ident.Obj.Decl.(*ast.Field); ok {
+func validateSwitch(pkgs []*types.Package, switchStmt *ast.SwitchStmt, pkgPath string) error {
+	if switchedType, ok := typeNameOf(switchStmt); ok {
+		names, ok := enumNamesFor(pkgs, pkgPath, switchedType)
+		if !ok {
+			return nil
+		}
+		return assertCases(switchStmt, switchedType, names)
+	}
+
+	return nil
+}
+
+// E.g. with `type demo int`, and a switch ranging over a value of type `demo`,
+// this would return ("demo", true). Most other cases are ("", false).
+func typeNameOf(switchStmt *ast.SwitchStmt) (string, bool) {
+	switch tag := switchStmt.Tag.(type) {
+	case *ast.CallExpr: // e.g. switch action(...) in galaxy-go/snapshot/diff.go
+		switch fun := tag.Fun.(type) {
+		case *ast.SelectorExpr:
+			var selector *ast.Ident = fun.Sel
+			_ = selector
+
+			switch recv := fun.X.(type) {
+			case *ast.Ident:
+				fmt.Printf("%#v\n", recv.Obj.Decl)
+			}
+		case *ast.Ident:
+			if obj := fun.Obj; obj != nil {
+				if decl, ok := obj.Decl.(*ast.FuncDecl); ok {
+					var resFL *ast.FieldList = decl.Type.Results
+					if len(resFL.List) == 1 {
+						var field *ast.Field = resFL.List[0]
+						if resType, ok := field.Type.(*ast.Ident); ok {
+							return resType.Name, true
+						}
+					}
+				}
+			}
+		}
+	case *ast.Ident:
+		if fld, ok := tag.Obj.Decl.(*ast.Field); ok {
 			if tid, ok := fld.Type.(*ast.Ident); ok {
 				obj := tid.Obj
-				if obj.Kind == ast.Typ {
-					// obj might be an enumType
-					names, ok := enumNamesFor(pkgs, pkgPath, obj.Name)
-					if !ok {
-						return true
-					}
-					return assertCases(node, names)
+				if obj != nil && obj.Kind == ast.Typ {
+					return obj.Name, true
 				}
 			}
 		}
 	}
-	return true
+	return "", false
 }
 
 func CheckSwitch(f *lint.File) {
@@ -96,7 +123,12 @@ func CheckSwitch(f *lint.File) {
 		if !ok {
 			return true
 		}
-		return validateSwitch(allPkgs, switchStmt, pkgPath)
+		// fmt.Printf("%s, %#v\n", f.Filename, switchStmt.Tag)
+		if err := validateSwitch(allPkgs, switchStmt, pkgPath); err != nil {
+			f.Errorf(switchStmt, err.Error())
+			return false
+		}
+		return true
 	}
 	f.Walk(fn)
 }
