@@ -129,8 +129,15 @@ func CheckSwitch(f *lint.File) {
 // we get back []string{"a", "b"}, true.
 func enumNamesFor(pkgs []*types.Package, typeName *types.TypeName) (names []string, ok bool) {
 	for _, pkg := range pkgs {
+
+		// does this resolve to a package? (e.g. error doesn't)
+		tnp := typeName.Pkg()
+		if tnp == nil {
+			continue
+		}
+
 		// is it the package we're looking for?
-		if pkg.Path() != typeName.Pkg().Path() {
+		if pkg.Path() != tnp.Path() {
 			continue
 		}
 
