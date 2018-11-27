@@ -85,23 +85,19 @@ func validateSwitch(pkgs []*types.Package, info types.Info, switchStmt *ast.Swit
 func typeNameOf(info types.Info, switchStmt *ast.SwitchStmt) (*types.TypeName, bool) {
 	expr, ok := switchStmt.Tag.(ast.Expr)
 	if !ok {
-		fmt.Printf("aaa: %#v\n", switchStmt)
 		return nil, false
 	}
 
 	typeAndValue, ok := info.Types[expr]
 	if !ok {
-		fmt.Printf("bbb: %#v\n", expr)
 		return nil, false
 	}
 
 	namedType, ok := typeAndValue.Type.(*types.Named)
 	if !ok {
-		fmt.Printf("ccc: %#v\n", typeAndValue)
 		return nil, false
 	}
 
-	// fmt.Printf("ddd: %#v\n", namedType.Obj())
 	return namedType.Obj(), true
 }
 
@@ -116,7 +112,6 @@ func CheckSwitch(f *lint.File) {
 		if !ok {
 			return true
 		}
-		// fmt.Printf("%s, %#v\n", f.Filename, switchStmt.Tag)
 		if err := validateSwitch(allPkgs, info, switchStmt, pkgPath); err != nil {
 			f.Errorf(switchStmt, err.Error())
 			return false
