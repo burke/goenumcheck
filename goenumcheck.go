@@ -9,17 +9,6 @@ import (
 	"honnef.co/go/lint"
 )
 
-type enumType struct {
-	typ   *types.Named
-	names []string
-}
-
-// var enumTypes map[string][]string
-
-// func init() {
-// 	enumTypes = make(map[string][]string)
-// }
-
 type Checker struct{}
 
 func NewChecker() *Checker {
@@ -34,7 +23,7 @@ func (c *Checker) Funcs() map[string]lint.Func {
 	}
 }
 
-func assertCases(node *ast.SwitchStmt, info types.Info, etype []string) bool {
+func assertCases(node *ast.SwitchStmt, etype []string) bool {
 	found := make(map[string]bool)
 	for _, e := range etype {
 		found[e] = false
@@ -78,15 +67,18 @@ func assertCases(node *ast.SwitchStmt, info types.Info, etype []string) bool {
 	return true
 }
 
-func resolve(node *ast.SwitchStmt, info types.Info, pkgPath string, enumTypes map[string][]string) bool {
+func validateSwitch(pkgs []*types.Package, node *ast.SwitchStmt, pkgPath string) bool {
 	if ident, ok := node.Tag.(*ast.Ident); ok {
 		if fld, ok := ident.Obj.Decl.(*ast.Field); ok {
 			if tid, ok := fld.Type.(*ast.Ident); ok {
 				obj := tid.Obj
 				if obj.Kind == ast.Typ {
-					if etype, ok := enumTypes[pkgPath+"."+obj.Name]; ok {
-						return assertCases(node, info, etype)
+					// obj might be an enumType
+					names, ok := enumNamesFor(pkgs, pkgPath, obj.Name)
+					if !ok {
+						return true
 					}
+					return assertCases(node, names)
 				}
 			}
 		}
@@ -95,11 +87,8 @@ func resolve(node *ast.SwitchStmt, info types.Info, pkgPath string, enumTypes ma
 }
 
 func CheckSwitch(f *lint.File) {
-	all := typeutil.Dependencies(f.Pkg.TypesPkg)
+	allPkgs := typeutil.Dependencies(f.Pkg.TypesPkg)
 
-	enumTypes := enumTypesOf(all)
-
-	info := f.Pkg.TypesInfo
 	pkgPath := f.Pkg.TypesPkg.Path()
 
 	fn := func(node ast.Node) bool {
@@ -107,36 +96,54 @@ func CheckSwitch(f *lint.File) {
 		if !ok {
 			return true
 		}
-		if !resolve(switchStmt, info, pkgPath, enumTypes) {
-			return false
-		}
-		return true
+		return validateSwitch(allPkgs, switchStmt, pkgPath)
 	}
 	f.Walk(fn)
 }
 
-func enumTypesOf(pkgs []*types.Package) map[string][]string {
-	enumTypes := make(map[string][]string)
+// If we have a source file containing:
+//   type foo int ; const a foo = iota ; const b foo = iota
+// and we invoke this with the path of that package and "foo",
+// we get back []string{"a", "b"}, true.
+func enumNamesFor(pkgs []*types.Package, pkgPath, typeName string) (names []string, ok bool) {
 	for _, pkg := range pkgs {
+		// is it the package we're looking for?
+		if pkg.Path() != pkgPath {
+			continue
+		}
+
 		for _, name := range pkg.Scope().Names() {
+			// is it the name we're looking for?
+			if name != typeName {
+				continue
+			}
+
+			// is it a type?
 			obj, ok := pkg.Scope().Lookup(name).(*types.TypeName)
-			if ok && obj != nil {
-				// is a type alias
-				if typ, ok := obj.Type().(*types.Named); ok {
-					// is an alias to `int`
-					if types.Typ[types.Int] == typ.Underlying() {
-						// find all constant assignments
-						for _, name := range pkg.Scope().Names() {
-							if obj, ok := pkg.Scope().Lookup(name).(*types.Const); ok {
-								if obj.Type() == typ {
-									enumTypes[typ.String()] = append(enumTypes[typ.String()], obj.Name())
-								}
-							}
-						}
+			if !ok {
+				continue
+			}
+
+			// is a type alias?
+			typ, ok := obj.Type().(*types.Named)
+			if !ok {
+				continue
+			}
+
+			// is it an alias to `int`?
+			if types.Typ[types.Int] != typ.Underlying() {
+				continue
+			}
+
+			// Find all package-local instances of this type.
+			for _, name := range pkg.Scope().Names() {
+				if obj, ok := pkg.Scope().Lookup(name).(*types.Const); ok {
+					if obj.Type() == typ {
+						names = append(names, obj.Name())
 					}
 				}
 			}
 		}
 	}
-	return enumTypes
+	return names, len(names) != 0
 }
